@@ -1,0 +1,86 @@
+#cloud-config
+ssh_pwauth: true
+
+users:
+  - default
+  - name: timmy
+    gecos: Timmy User
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    groups: users, admin
+    lock_passwd: false
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDVj+C4oF8dW6oZMGeqEmcnftVVgSRtbmj8/y/9cnc7H kedowsl@DESKTOP-77DQ24L"
+
+  - name: lizzie
+    gecos: Lizzie User
+    sudo: FALSE
+    lock_passwd: false
+    shell: /bin/bash
+
+  - name: ken
+    gecos: Ken User
+    sudo: FALSE
+    lock_passwd: false
+    shell: /bin/bash
+
+chpasswd:
+  list: |
+    timmy:timmydaboss
+    lizzie:lizzie784
+    ken:gigachadken
+  expire: False
+
+# Package management
+package_reboot_if_required: true
+package_update: true
+package_upgrade: true
+
+# Packages to install
+packages:
+  - postgresql
+  - postgresql-contrib
+
+runcmd:
+  # Wait for network
+  - sh -c "sleep 15"
+
+  # Clean apt locks and configure dpkg
+  - sh -c "rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock || true"
+  - sh -c "dpkg --configure -a || true"
+
+  # Install PostgreSQL with retry
+  - |
+    for i in 1 2 3; do
+      apt-get update && apt-get install -y postgresql postgresql-contrib && break || sleep 15
+    done
+
+  - sh -c "sleep 3"
+
+  # Update postgresql.conf to listen on all interfaces
+  - |
+    PGDIR=$(cat /tmp/pgdir)
+    if [ -f "$PGDIR/postgresql.conf" ]; then
+      sed -i 's|^#\?listen_addresses\s*=.*|listen_addresses = '\''*'\''|' "$PGDIR/postgresql.conf"
+    fi
+
+  # Update pg_hba.conf file
+  - echo "host all all 0.0.0.0/0 scram-sha-256" >> /etc/postgresql/*/main/pg_hba.conf
+
+  # Enable and restart PostgreSQL
+  - sh -c "systemctl enable postgresql"
+  - sh -c "systemctl restart postgresql"
+
+  # Create db_timmy user, database, and grant pg_execute_server_program
+  - |
+    sudo -u postgres psql -v ON_ERROR_STOP=1 <<'SQL'
+    CREATE ROLE db_timmy WITH LOGIN PASSWORD 'timmy';
+    CREATE DATABASE db_timmy OWNER db_timmy;
+    GRANT ALL PRIVILEGES ON DATABASE db_timmy TO db_timmy;
+    GRANT pg_execute_server_program TO db_timmy;
+
+  # Restart PostgreSQL again to ensure all config is loaded
+  - sh -c "systemctl restart postgresql"
+
+  # Log completion
+  - sh -c "echo 'cloud-init run complete' > /var/log/my-cloud-init.log"

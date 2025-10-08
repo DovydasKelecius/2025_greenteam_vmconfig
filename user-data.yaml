@@ -20,6 +20,14 @@ users:
     ssh_authorized_keys:
       - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDVj+C4oF8dW6oZMGeqEmcnftVVgSRtbmj8/y/9cnc7H kedowsl@DESKTOP-77DQ24L"
 
+  - lizzie
+    gecos: Lizzie User
+    sudo: false
+    lock_passwd: true
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC0uYk1rYk1pT3ZtYlB3cXJmUXV3bG9pT3p5a2ZUR3pR kedowsl@DESKTOP-77DQ24L"
+
   - name: rtkit
     gecos: "rtkit lab user"
     shell: /bin/bash
@@ -48,6 +56,7 @@ chpasswd:
   list: |
     admin:admin
     timmy:timmydaboss
+    lizzie:lizzie123
     rtkit:rtkit
     vsftpd:vsftpd
     apache:apache

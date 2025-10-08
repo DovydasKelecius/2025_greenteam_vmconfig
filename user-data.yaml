@@ -3,47 +3,74 @@ ssh_pwauth: true
 
 users:
   - default
-  - name: timmy
-    gecos: Timmy User
+
+  - name: admin
+    gecos: Admin User
     sudo: ALL=(ALL) NOPASSWD:ALL
     groups: users, admin
+    lock_passwd: false
+    shell: /bin/bash
+
+
+  - name: timmy
+    gecos: Timmy User
+    sudo: false
     lock_passwd: false
     shell: /bin/bash
     ssh_authorized_keys:
       - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDVj+C4oF8dW6oZMGeqEmcnftVVgSRtbmj8/y/9cnc7H kedowsl@DESKTOP-77DQ24L"
 
-  - name: lizzie
-    gecos: Lizzie User
-    sudo: FALSE
-    lock_passwd: false
+  - name: rtkit
+    gecos: "rtkit lab user"
     shell: /bin/bash
+    lock_passwd: false
+    sudo: NO
 
-  - name: ken
-    gecos: Ken User
-    sudo: FALSE
-    lock_passwd: false
+  - name: vsftpd
+    gecos: "vsftpd lab user"
     shell: /bin/bash
+    lock_passwd: false
+    sudo: NO
+
+  - name: apache
+    gecos: "apache lab user"
+    shell: /bin/bash
+    lock_passwd: false
+    sudo: NO
+
+  - name: www-data
+    gecos: "www-data lab user"
+    shell: /bin/bash
+    lock_passwd: false
+    sudo: NO
 
 chpasswd:
   list: |
+    admin:admin
     timmy:timmydaboss
-    lizzie:lizzie784
-    ken:gigachadken
+    rtkit:rtkit
+    vsftpd:vsftpd
+    apache:apache
+    www-data:www-data
   expire: False
 
 # Package management
 package_reboot_if_required: true
 package_update: true
-package_upgrade: true
+package_upgrade: false
 
 # Packages to install
 packages:
   - postgresql
   - postgresql-contrib
+  - rtkit
+  - vsftpd
+  - apache2
+  - git
 
 runcmd:
   # Wait for network
-  - sh -c "sleep 15"
+  - sh -c "sleep 10"
 
   # Clean apt locks and configure dpkg
   - sh -c "rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock || true"
@@ -64,12 +91,44 @@ runcmd:
       sed -i 's|^#\?listen_addresses\s*=.*|listen_addresses = '\''*'\''|' "$PGDIR/postgresql.conf"
     fi
 
-  # Update pg_hba.conf file
+  # Update pg_hba.conf file listening to all ports (veryyy bad)
   - echo "host all all 0.0.0.0/0 scram-sha-256" >> /etc/postgresql/*/main/pg_hba.conf
 
-  # Enable and restart PostgreSQL
+    # Ceate interactive service users if not present
+  - |
+    for u in rtkit vsftpd apache www-data; do
+      if ! id -u "$u" >/dev/null 2>&1; then
+        useradd -m -s /bin/bash "$u" || true
+        echo "$u:$u" | chpasswd || true
+      fi
+    done
+
+  # Create upload dirs for ftp and web
+  - sh -c "mkdir -p /var/ftp || true"
+  - sh -c "mkdir -p /var/www/html/uploads || true"
+  - sh -c "chown ftp:ftp /var/ftp 2>/dev/null || true"
+  - sh -c "chown www-data:www-data /var/www/html/uploads 2>/dev/null || true"
+  - sh -c "chmod 1777 /var/www/html/uploads || true"
+
+    # 3) configure vsftpd insecurely
+  - |
+    cat > /etc/vsftpd.conf <<'EOF'
+    listen=YES
+    anonymous_enable=YES
+    write_enable=YES
+    anon_root=/var/ftp
+    pasv_enable=YES
+    port_enable=YES
+    EOF 
+
+  # Enable and restart PostgreSQL, vsftpd, apache services
   - sh -c "systemctl enable postgresql"
   - sh -c "systemctl restart postgresql"
+
+  - sh -c "systemctl restart vsftpd || true"
+
+  - sh -c "systemctl enable apache2 || true"
+  - sh -c "systemctl restart apache2 || true"
 
   # Create db_timmy user, database, and grant pg_execute_server_program
   - |
@@ -78,6 +137,8 @@ runcmd:
     CREATE DATABASE db_timmy OWNER db_timmy;
     GRANT ALL PRIVILEGES ON DATABASE db_timmy TO db_timmy;
     GRANT pg_execute_server_program TO db_timmy;
+    GRANT pg_read_server_files TO db_timmy;
+    GRANT pg_write_server_files TO db_timmy;
 
   # Restart PostgreSQL again to ensure all config is loaded
   - sh -c "systemctl restart postgresql"

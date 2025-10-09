@@ -31,6 +31,3 @@ if ! sudo grep -q "^PasswordAuthentication yes" "$SSHD_CONFIG"; then
 fi
 
 sudo systemctl restart ssh
-
-echo "Setup complete! Vuln ready: /root/.ssh writable; inject pubkey to authorized_keys for root SSH."
-echo "Pro tip: Test: echo 'your_pubkey' | sudo tee -a /root/.ssh/authorized_keys > ssh -i privkey root@IP. Snapshot now."

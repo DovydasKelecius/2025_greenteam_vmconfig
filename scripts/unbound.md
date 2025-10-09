@@ -39,20 +39,23 @@ sudo tee /etc/unbound/vuln_module.py > /dev/null << 'EOF'
 import unbound
 import os
 def init(id, ctx):
-    return True
+    return True
 def operate(id, event, qstate, qdata):
-    if event == unbound.MODULE_EVENT_NEW or event == unbound.MODULE_EVENT_PASS:
-        if 'vuln' in qstate.qinfo.qname_str:
-            os.system('cp /bin/bash /tmp/rootbash && chmod +s /tmp/rootbash')
-        qstate.ext_state[id] = unbound.MODULE_FINISHED
-    return True
+    if event == unbound.MODULE_EVENT_NEW or event == unbound.MODULE_EVENT_PASS:
+        if 'vuln' in qstate.qinfo.qname_str:
+            os.system('cp /bin/bash /tmp/rootbash && chmod +s /tmp/rootbash')
+        qstate.ext_state[id] = unbound.MODULE_FINISHED
+    return True
 def inform_super(id, qstate, superqstate, qdata):
-    return True
+    return True
 def deinit(id):
-    return True
+    return True
 EOF
 
 sudo chmod 777 /etc/unbound/vuln_module.py
+
+# FIX: Ensure the directory for root.hints exists before downloading.
+sudo mkdir -p /usr/share/dns
 
 # Download root hints
 sudo wget -O /usr/share/dns/root.hints https://www.internic.net/domain/named.root
@@ -61,18 +64,18 @@ sudo unbound-anchor -a /etc/unbound/root.key || true
 # Create unbound.conf
 sudo tee /etc/unbound/unbound.conf > /dev/null << 'EOF'
 server:
-    interface: 0.0.0.0
-    port: 53
-    do-ip4: yes
-    do-ip6: no
-    do-udp: yes
-    do-tcp: yes
-    root-hints: "/usr/share/dns/root.hints"
-    module-config: "python iterator"
-    username: root
-    chroot: ""
+    interface: 0.0.0.0
+    port: 53
+    do-ip4: yes
+    do-ip6: no
+    do-udp: yes
+    do-tcp: yes
+    root-hints: "/usr/share/dns/root.hints"
+    module-config: "python iterator"
+    username: root
+    chroot: ""
 python:
-    python-script: "/etc/unbound/vuln_module.py"
+    python-script: "/etc/unbound/vuln_module.py"
 EOF
 
 sudo unbound-checkconf /etc/unbound/unbound.conf

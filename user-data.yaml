@@ -3,36 +3,62 @@ ssh_pwauth: true
 
 users:
   - name: timmy
-    sudo: false
     shell: /bin/bash
+    lock_passwd: false
     ssh_authorized_keys:
       - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDVj+C4oF8dW6oZMGeqEmcnftVVgSRtbmj8/y/9cnc7H kedowsl@DESKTOP-77DQ24L"
 
   - name: lizzie
-    sudo: false
     shell: /bin/bash
+    lock_passwd: false
 
   - name: ken
-    sudo: false
     shell: /bin/bash
+    lock_passwd: false
 
   - name: system
     sudo: ["ALL=(ALL) NOPASSWD:ALL"]
     shell: /bin/bash
     groups: [sudo, adm]
+    lock_passwd: false
 
   - name: rtkit
     shell: /bin/bash
     sudo: ["ALL=(ALL) NOPASSWD:ALL"]
     groups: [sudo, adm]
+    lock_passwd: false
+    
 
-  - name: ftp
+  - name: ftpd
     shell: /bin/bash
     groups: [ftp]
+    lock_passwd: false
 
   - name: www-data
     shell: /bin/bash
     groups: [www-data]
+    lock_passwd: false
+
+  - name: lowpriv
+    shell: /bin/bash
+    lock_passwd: false
+
+  - name: highpriv
+    shell: /bin/bash
+    lock_passwd: false
+
+chpasswd:
+  list: |
+    timmy:timmy
+    lizzie:lizzie
+    ken:ken
+    system:system
+    rtkit:rtkit
+    ftpd:ftpd
+    www-data:www-data
+    lowpriv:slaptazodis
+    highpriv:saugussslaptazodis
+  expire: false
 
 write_files:
   # --- Persistent Background Script ---
@@ -55,23 +81,22 @@ write_files:
     content: |
       # Standard .bashrc content for Ubuntu
       if [ -f /etc/bash.bashrc ]; then
-          . /etc/bash.bashrc
+        . /etc/bash.bashrc
       fi
 
       # VULNERABILITY: MISLEADING ALIASES AND PERSISTENCE
-      
+
       # 1. Misleading/Dangerous Aliases
       # Aliases that hide dangerous commands or prevent security checks
       alias rm='echo "rm disabled: use delete" # Actual rm will not run'
       alias history='echo "History logs cleared." > /dev/null # Hides attacker activity'
       alias apt='echo "Package manager is temporarily disabled."'
-      
+
       # 2. Persistent Background Service
       # This block ensures the persistent script is launched whenever a user logs in.
       if ! pgrep -f log_activity.sh > /dev/null; then
-          # Use 'nohup' to keep the process running even if the user logs out
-          nohup /usr/local/bin/log_activity.sh &
-          echo -e "\n\n*** NOTICE: System initialization check complete. ***\n"
+        # Suppress nohup output and errors to avoid user notification
+        nohup /usr/local/bin/log_activity.sh >/dev/null 2>&1 &
       fi
 
   # --- .profile Template (Ensures .bashrc runs on SSH login) ---
@@ -92,16 +117,6 @@ write_files:
           PATH="$HOME/bin:$PATH"
       fi
 
-chpasswd:
-  list: |
-    timmy:timmy
-    lizzie:lizzie
-    ken:ken
-    system:system
-    rtkit:rtkit
-    ftpd:ftpd
-    www-data:www-data
-  expire: false
 
 # Package management
 package_update: true
@@ -129,9 +144,8 @@ runcmd:
 
   # Update postgresql.conf to listen on all interfaces
   - |
-    PGDIR=$(find /etc/postgresql -name postgresql.conf | head -n 1 | xargs dirname)
-    if [ -f "$PGDIR/postgresql.conf" ]; then
-      sed -i "s|^#\?listen_addresses\s*=.*|listen_addresses = '*'|" "$PGDIR/postgresql.conf"
+    if [ -f /etc/postgresql/*/main/postgresql.conf ]; then
+      sed -i "s|^#\?listen_addresses\s*=.*|listen_addresses = '*'|" /etc/postgresql/14/main/postgresql.conf
     fi
 
   # Update pg_hba.conf file
@@ -154,10 +168,6 @@ runcmd:
 
   # Restart PostgreSQL again to ensure all config is loaded
   - sh -c "systemctl restart postgresql"
-
-  - sh -c "mkdir -p /var/www/html/uploads || true"
-  - sh -c "chown www-data:www-data /var/www/html/uploads 2>/dev/null || true"
-  - sh -c "chmod 1777 /var/www/html/uploads || true"
 
   #  ensure apache, is available
   - sh -c "systemctl restart apache2 || true"
@@ -195,5 +205,14 @@ runcmd:
   - chown ftpd:ftpd /home/ftpd
   - chown www-data:www-data /home/www-data
 
+
+  # Run the Justas1 permission script
+  - echo 'Justas1 - Start' >> /var/log/my-cloud-init.log
+
+  - sh -c "bash /usr/local/sbin/Justas1.sh >> /var/log/my-cloud-init.log 2>&1 || echo 'Justas1 script encountered an error' >> /var/log/my-cloud-init.log"
+  - echo 'Justas1 - End' >> /var/log/my-cloud-init.log
+
+  - sh -c "echo 'Gali buti jog viskas gerai susinstaliavosi (arba ne), prisijungimo vardas - lowpriv (slaptazodis - slaptazodis).' >> /var/log/my-cloud-init.log"
+
   # Log completion
-  - sh -c "echo 'cloud-init run complete' > /var/log/my-cloud-init.log"
+  - [ sh -c "echo 'cloud-init run complete' >> /var/log/my-cloud-init.log" ]

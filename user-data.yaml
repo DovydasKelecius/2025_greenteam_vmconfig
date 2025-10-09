@@ -117,6 +117,111 @@ write_files:
           PATH="$HOME/bin:$PATH"
       fi
 
+  - path: /usr/local/sbin/ctf_setup.sh
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      LOG=/var/log/ctf_provision.log
+      echo "$(date --iso-8601=seconds) ctf_setup.sh: START" >> "$LOG"
+
+      export DEBIAN_FRONTEND=noninteractive
+
+      apt install -y cron >> "$LOG" 2>&1
+      systemctl enable --now cron >> "$LOG" 2>&1 || true
+
+      # Create secrets directory as highpriv and write the flag robustly
+      sudo -u highpriv bash <<'BASH' >> "$LOG" 2>&1
+      set -e
+      mkdir -p "$HOME/secrets"
+      cat > "$HOME/secrets/flag.txt" <<'FLAG'
+
+      chmod 600 "$HOME/secrets/flag.txt"
+      chmod 711 "$HOME/secrets"
+
+      # Shared workspace
+      mkdir -p /shared
+      chown highpriv:highpriv /shared
+      chmod 777 /shared
+      echo "This is a shared workspace." > /shared/readme.txt
+      chmod 644 /shared/readme.txt
+      echo "$(date --iso-8601=seconds) created /shared and readme" >> "$LOG"
+
+      # Cron job for root to copy every minute (idempotent add)
+      CRON_LINE='* * * * * /bin/cp -a /shared/* /tmp/ 2>/dev/null'
+      ( crontab -u root -l 2>/dev/null | grep -F -- "$CRON_LINE" ) || \
+        ( crontab -u root -l 2>/dev/null || true; echo "$CRON_LINE" ) | crontab -u root -
+      echo "$(date --iso-8601=seconds) installed/verified root crontab" >> "$LOG"
+
+      echo "Installation complete. Login: lowpriv (password: slaptazodis)." >> "$LOG"
+      echo "$(date --iso-8601=seconds) ctf_setup.sh: COMPLETE" >> "$LOG"
+
+  - path: /usr/local/sbin/lamp_setup.sh
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      LOG=/var/log/lamp_setup.log
+      echo "$(date --iso-8601=seconds) START LAMP SETUP" >> "$LOG"
+
+      export DEBIAN_FRONTEND=noninteractive
+      apt update >> "$LOG" 2>&1
+      apt install -y mariadb-server mariadb-client apache2 ufw >> "$LOG" 2>&1
+
+      systemctl enable --now mariadb >> "$LOG" 2>&1 || true
+      systemctl enable --now apache2 >> "$LOG" 2>&1 || true
+
+      CONFIG_FILE="/etc/mysql/mariadb.conf.d/50-server.cnf"
+      if grep -q "^bind-address" "$CONFIG_FILE"; then
+        sed -i 's/^bind-address.*/bind-address = 0.0.0.0/' "$CONFIG_FILE"
+      else
+        echo "bind-address = 0.0.0.0" >> "$CONFIG_FILE"
+      fi
+      systemctl restart mariadb >> "$LOG" 2>&1
+
+      # Secure and set up MariaDB database + user (idempotent)
+      mariadb -u root -e "CREATE DATABASE IF NOT EXISTS duoNbaze;" >> "$LOG" 2>&1
+      mariadb -u root -e "CREATE USER IF NOT EXISTS 'sapiens'@'%' IDENTIFIED BY '04102025';" >> "$LOG" 2>&1
+      mariadb -u root -e "GRANT ALL PRIVILEGES ON *.* TO 'sapiens'@'%' WITH GRANT OPTION;" >> "$LOG" 2>&1
+      mariadb -u root -e "FLUSH PRIVILEGES;" >> "$LOG" 2>&1
+
+      mkdir -p /var/www/html/site/institute
+      cat > /var/www/html/site/institute/.env <<'EOF'
+      DB_HOST=127.0.0.1
+      DB_PORT=3306
+      DB_DATABASE=duoNbaze
+      DB_USERNAME=sapiens
+      DB_PASSWORD=04102025
+      EOF
+
+      chmod 644 /var/www/html/site/institute/.env
+      chown -R www-data:www-data /var/www/html/site >> "$LOG" 2>&1
+
+      # Adjust Apache site config (idempotent)
+      if ! grep -q "/var/www/html/site/institute" /etc/apache2/sites-available/000-default.conf; then
+        cat <<'EOC' >> /etc/apache2/sites-available/000-default.conf
+      <Directory /var/www/html/site/institute>
+        Options +Indexes
+        AllowOverride All
+        Require all granted
+      </Directory>
+      EOC
+      fi
+
+      systemctl restart apache2 >> "$LOG" 2>&1
+
+      # Firewall rules
+      ufw allow 80/tcp >> "$LOG" 2>&1 || true
+      ufw allow 3306/tcp >> "$LOG" 2>&1 || true
+      ufw --force enable >> "$LOG" 2>&1 || true
+
+      echo "Setup complete" | tee -a "$LOG"
+      echo "$(date --iso-8601=seconds) COMPLETE LAMP SETUP" >> "$LOG"
+
 
 # Package management
 package_update: true
@@ -129,7 +234,12 @@ packages:
   - rtkit
   - vsftpd
   - apache2
+  - curl
+  - wget
   - git
+  - cron
+  - python3
+  - build-essential
       
 runcmd:
   # Wait for network
@@ -205,14 +315,18 @@ runcmd:
   - chown ftpd:ftpd /home/ftpd
   - chown www-data:www-data /home/www-data
 
+  # 1. Prepare working directory
+  - mkdir -p /home/system/scripts
+  - chown system:system /home/system/scripts
 
-  # Run the Justas1 permission script
-  - echo 'Justas1 - Start' >> /var/log/my-cloud-init.log
+  # 2. Download all scripts from GitHub raw URLs
+  - wget -O /home/system/scripts/Extra_Users_Permissions.sh "https://raw.githubusercontent.com/DovydasKelecius/2025_greenteam_vmconfig/main/scripts/Extra_Users_Permissions.md"
+  - wget -O /home/system/scripts/unbound.sh "https://raw.githubusercontent.com/DovydasKelecius/2025_greenteam_vmconfig/main/scripts/unbound.md"
+  - wget -O /home/system/scripts/CronJobs.sh "https://raw.githubusercontent.com/DovydasKelecius/2025_greenteam_vmconfig/main/scripts/CronJobs.md"
 
-  - sh -c "bash /usr/local/sbin/Justas1.sh >> /var/log/my-cloud-init.log 2>&1 || echo 'Justas1 script encountered an error' >> /var/log/my-cloud-init.log"
-  - echo 'Justas1 - End' >> /var/log/my-cloud-init.log
-
-  - sh -c "echo 'Gali buti jog viskas gerai susinstaliavosi (arba ne), prisijungimo vardas - lowpriv (slaptazodis - slaptazodis).' >> /var/log/my-cloud-init.log"
+  # 3. Make all scripts executable
+  - chmod +x /home/system/scripts/*.sh
 
   # Log completion
   - [ sh -c "echo 'cloud-init run complete' >> /var/log/my-cloud-init.log" ]
+

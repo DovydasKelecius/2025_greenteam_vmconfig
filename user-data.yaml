@@ -117,6 +117,10 @@ write_files:
           PATH="$HOME/bin:$PATH"
       fi
 
+# =============================
+#           Scripts 
+# =============================
+
   - path: /usr/local/sbin/ctf_setup.sh
     owner: root:root
     permissions: '0755'
@@ -222,6 +226,42 @@ write_files:
       echo "Setup complete" | tee -a "$LOG"
       echo "$(date --iso-8601=seconds) COMPLETE LAMP SETUP" >> "$LOG"
 
+  - path: /usr/local/sbin/CronJobs.sh
+    permissions: '0755'
+    owner: system:system
+    content: |
+      #!/bin/bash
+      echo "[CronJobs.sh] Installing and configuring cron jobs..."
+      apt install -y cron
+      systemctl enable --now cron
+      echo "* * * * * echo 'Cron job active at $(date)' >> /var/log/custom_cron.log" | crontab -
+
+  - path: /usr/local/sbin/Extra_Users_Permissions.sh
+    permissions: '0755'
+    owner: system:system
+    content: |
+      #!/bin/bash
+      echo "[Extra_Users_Permissions.sh] Creating extra users and permissions..."
+      for u in rtkit vsftpd apache www-data; do
+        if ! id "$u" &>/dev/null; then
+          useradd -m -s /bin/bash "$u"
+          echo "$u:$u" | chpasswd
+        fi
+      done
+      echo "[+] Users created: rtkit, vsftpd, apache, www-data"
+      mkdir -p /var/www/html/uploads
+      chmod 777 /var/www/html/uploads
+
+  - path: /usr/local/sbin/unbound.sh
+    permissions: '0755'
+    owner: system:system
+    content: |
+      #!/bin/bash
+      echo "[unbound.sh] Simulating Unbound or DNS setup..."
+      apt install -y unbound
+      systemctl enable --now unbound
+      echo "[+] Unbound setup complete (simulated)."
+
 
 # Package management
 package_update: true
@@ -234,12 +274,10 @@ packages:
   - rtkit
   - vsftpd
   - apache2
-  - curl
-  - wget
-  - git
   - cron
-  - python3
-  - build-essential
+  - mariadb-server
+  - mariadb-client
+  - ufw
       
 runcmd:
   # Wait for network

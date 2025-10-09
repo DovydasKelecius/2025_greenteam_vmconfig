@@ -2,71 +2,110 @@
 ssh_pwauth: true
 
 users:
-  - default
-
-  - name: admin
-    gecos: Admin User
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    groups: users, admin
-    lock_passwd: false
-    shell: /bin/bash
-
-
   - name: timmy
-    gecos: Timmy User
     sudo: false
-    lock_passwd: false
     shell: /bin/bash
     ssh_authorized_keys:
       - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDVj+C4oF8dW6oZMGeqEmcnftVVgSRtbmj8/y/9cnc7H kedowsl@DESKTOP-77DQ24L"
 
-  - lizzie
-    gecos: Lizzie User
+  - name: lizzie
     sudo: false
-    lock_passwd: true
     shell: /bin/bash
-    ssh_authorized_keys:
-      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC0uYk1rYk1pT3ZtYlB3cXJmUXV3bG9pT3p5a2ZUR3pR kedowsl@DESKTOP-77DQ24L"
+
+  - name: ken
+    sudo: false
+    shell: /bin/bash
+
+  - name: system
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    shell: /bin/bash
+    groups: [sudo, adm]
 
   - name: rtkit
-    gecos: "rtkit lab user"
     shell: /bin/bash
-    lock_passwd: false
-    sudo: NO
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    groups: [sudo, adm]
 
-  - name: vsftpd
-    gecos: "vsftpd lab user"
+  - name: ftp
     shell: /bin/bash
-    lock_passwd: false
-    sudo: NO
-
-  - name: apache
-    gecos: "apache lab user"
-    shell: /bin/bash
-    lock_passwd: false
-    sudo: NO
+    groups: [ftp]
 
   - name: www-data
-    gecos: "www-data lab user"
     shell: /bin/bash
-    lock_passwd: false
-    sudo: NO
+    groups: [www-data]
+
+write_files:
+  # --- Persistent Background Script ---
+  # This script simulates a basic backdoor or persistent logging service
+  - path: /usr/local/bin/log_activity.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/bin/bash
+      # Logs the date and the current user to a shared, unexpected file every 5 seconds.
+      while true; do
+        echo "$(date): User $USER's shell is active." >> /tmp/persistent_backdoor.log
+        sleep 5
+      done
+
+  # --- .bashrc Template ---
+  - path: /tmp/malicious.bashrc
+    permissions: '0644'
+    owner: root:root
+    content: |
+      # Standard .bashrc content for Ubuntu
+      if [ -f /etc/bash.bashrc ]; then
+          . /etc/bash.bashrc
+      fi
+
+      # VULNERABILITY: MISLEADING ALIASES AND PERSISTENCE
+      
+      # 1. Misleading/Dangerous Aliases
+      # Aliases that hide dangerous commands or prevent security checks
+      alias rm='echo "rm disabled: use delete" # Actual rm will not run'
+      alias history='echo "History logs cleared." > /dev/null # Hides attacker activity'
+      alias apt='echo "Package manager is temporarily disabled."'
+      
+      # 2. Persistent Background Service
+      # This block ensures the persistent script is launched whenever a user logs in.
+      if ! pgrep -f log_activity.sh > /dev/null; then
+          # Use 'nohup' to keep the process running even if the user logs out
+          nohup /usr/local/bin/log_activity.sh &
+          echo -e "\n\n*** NOTICE: System initialization check complete. ***\n"
+      fi
+
+  # --- .profile Template (Ensures .bashrc runs on SSH login) ---
+  - path: /tmp/profile_fix
+    permissions: '0644'
+    owner: root:root
+    content: |
+      # Check if .bashrc exists and source it for interactive shells
+      if [ -n "$BASH_VERSION" ]; then
+          # include .bashrc if it exists
+          if [ -f "$HOME/.bashrc" ]; then
+              . "$HOME/.bashrc"
+          fi
+      fi
+      
+      # set PATH so it includes user's private bin if it exists
+      if [ -d "$HOME/bin" ] ; then
+          PATH="$HOME/bin:$PATH"
+      fi
 
 chpasswd:
   list: |
-    admin:admin
-    timmy:timmydaboss
-    lizzie:lizzie123
+    timmy:timmy
+    lizzie:lizzie
+    ken:ken
+    system:system
     rtkit:rtkit
-    vsftpd:vsftpd
-    apache:apache
+    ftpd:ftpd
     www-data:www-data
-  expire: False
+  expire: false
 
 # Package management
-package_reboot_if_required: true
 package_update: true
-package_upgrade: false
+package_upgrade: true
 
 # Packages to install
 packages:
@@ -76,7 +115,7 @@ packages:
   - vsftpd
   - apache2
   - git
-
+      
 runcmd:
   # Wait for network
   - sh -c "sleep 10"
@@ -84,60 +123,23 @@ runcmd:
   # Clean apt locks and configure dpkg
   - sh -c "rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock || true"
   - sh -c "dpkg --configure -a || true"
-
-  # Install PostgreSQL with retry
-  - |
-    for i in 1 2 3; do
-      apt-get update && apt-get install -y postgresql postgresql-contrib && break || sleep 15
-    done
-
   - sh -c "sleep 3"
+
+# PostgreSQL setup
 
   # Update postgresql.conf to listen on all interfaces
   - |
-    PGDIR=$(cat /tmp/pgdir)
+    PGDIR=$(find /etc/postgresql -name postgresql.conf | head -n 1 | xargs dirname)
     if [ -f "$PGDIR/postgresql.conf" ]; then
-      sed -i 's|^#\?listen_addresses\s*=.*|listen_addresses = '\''*'\''|' "$PGDIR/postgresql.conf"
+      sed -i "s|^#\?listen_addresses\s*=.*|listen_addresses = '*'|" "$PGDIR/postgresql.conf"
     fi
 
-  # Update pg_hba.conf file listening to all ports (veryyy bad)
+  # Update pg_hba.conf file
   - echo "host all all 0.0.0.0/0 scram-sha-256" >> /etc/postgresql/*/main/pg_hba.conf
 
-    # Ceate interactive service users if not present
-  - |
-    for u in rtkit vsftpd apache www-data; do
-      if ! id -u "$u" >/dev/null 2>&1; then
-        useradd -m -s /bin/bash "$u" || true
-        echo "$u:$u" | chpasswd || true
-      fi
-    done
-
-  # Create upload dirs for ftp and web
-  - sh -c "mkdir -p /var/ftp || true"
-  - sh -c "mkdir -p /var/www/html/uploads || true"
-  - sh -c "chown ftp:ftp /var/ftp 2>/dev/null || true"
-  - sh -c "chown www-data:www-data /var/www/html/uploads 2>/dev/null || true"
-  - sh -c "chmod 1777 /var/www/html/uploads || true"
-
-    # 3) configure vsftpd insecurely
-  - |
-    cat > /etc/vsftpd.conf <<'EOF'
-    listen=YES
-    anonymous_enable=YES
-    write_enable=YES
-    anon_root=/var/ftp
-    pasv_enable=YES
-    port_enable=YES
-    EOF 
-
-  # Enable and restart PostgreSQL, vsftpd, apache services
+  # Enable and restart PostgreSQL
   - sh -c "systemctl enable postgresql"
   - sh -c "systemctl restart postgresql"
-
-  - sh -c "systemctl restart vsftpd || true"
-
-  - sh -c "systemctl enable apache2 || true"
-  - sh -c "systemctl restart apache2 || true"
 
   # Create db_timmy user, database, and grant pg_execute_server_program
   - |
@@ -148,9 +150,50 @@ runcmd:
     GRANT pg_execute_server_program TO db_timmy;
     GRANT pg_read_server_files TO db_timmy;
     GRANT pg_write_server_files TO db_timmy;
+    SQL
 
   # Restart PostgreSQL again to ensure all config is loaded
   - sh -c "systemctl restart postgresql"
+
+  - sh -c "mkdir -p /var/www/html/uploads || true"
+  - sh -c "chown www-data:www-data /var/www/html/uploads 2>/dev/null || true"
+  - sh -c "chmod 1777 /var/www/html/uploads || true"
+
+  #  ensure apache, is available
+  - sh -c "systemctl restart apache2 || true"
+
+# --- Deploy the malicious .bashrc to vulnerable users ---
+
+  # Copy the template to the home directory of each vulnerable user and set ownership.
+  # This ensures the malicious code runs on their first login.
+  - cp /tmp/malicious.bashrc /home/rtkit/.bashrc
+  - chown rtkit:rtkit /home/rtkit/.bashrc
+
+  - cp /tmp/malicious.bashrc /home/ftpd/.bashrc
+  - chown ftpd:ftpd /home/ftpd/.bashrc
+
+  - cp /tmp/malicious.bashrc /home/www-data/.bashrc
+  - chown www-data:www-data /home/www-data/.bashrc
+  
+  # This file ensures that the .bashrc is sourced when the user logs in via SSH.
+  - cp /tmp/profile_fix /home/rtkit/.profile
+  - chown rtkit:rtkit /home/rtkit/.profile
+  
+  - cp /tmp/profile_fix /home/ftpd/.profile
+  - chown ftpd:ftpd /home/ftpd/.profile
+
+  - cp /tmp/profile_fix /home/www-data/.profile
+  - chown www-data:www-data /home/www-data/.profile
+
+  # Remove the temporary template files
+  - rm /tmp/malicious.bashrc
+  - rm /tmp/profile_fix
+
+  # Ensure the home directories are properly created if they weren't already
+  - mkdir -p /home/rtkit /home/ftpd /home/www-data
+  - chown rtkit:rtkit /home/rtkit
+  - chown ftpd:ftpd /home/ftpd
+  - chown www-data:www-data /home/www-data
 
   # Log completion
   - sh -c "echo 'cloud-init run complete' > /var/log/my-cloud-init.log"

